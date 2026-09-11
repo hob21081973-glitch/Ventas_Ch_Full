@@ -20,11 +20,11 @@ const String urlProductosCSV = 'https://docs.google.com/spreadsheets/d/e/2PACX-1
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const AppVentasExportPdf());
+  runApp(const VentasChFull());
 }
 
-class AppVentasExportPdf extends StatelessWidget {
-  const AppVentasExportPdf({super.key});
+class VentasChFull extends StatelessWidget {
+  const VentasChFull({super.key});
 
   @override
   Widget build(BuildContext context) {
