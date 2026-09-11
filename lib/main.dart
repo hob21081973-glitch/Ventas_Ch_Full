@@ -15,8 +15,8 @@ import 'package:printing/printing.dart';
 final ValueNotifier<int> changeNotifierPedidos = ValueNotifier<int>(0); 
 
 // URLs de Google Sheets (Reemplaza con tus enlaces CSV publicados)
-const String urlClientesCSV = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTmtKhEE5ziDtm_BQdAeOy8c-Z6H6_GbyKcPOvtdjfKtXgxYObBUB-PlK0ldsiwrW78aabDzei-R2Cd/pub?gid=0&single=true&output=csv';
-const String urlProductosCSV = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTmtKhEE5ziDtm_BQdAeOy8c-Z6H6_GbyKcPOvtdjfKtXgxYObBUB-PlK0ldsiwrW78aabDzei-R2Cd/pub?gid=1903712481&single=true&output=csv';
+const String urlClientesCSV = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSDvlTapnV9oa4sybOn38Q3m74rhIEDzJzuLwj9nh-M_vwSOINprI4I6SwyRDjjMSJH5mDv_cr9P29m/pub?gid=0&single=true&output=csv';
+const String urlProductosCSV = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSDvlTapnV9oa4sybOn38Q3m74rhIEDzJzuLwj9nh-M_vwSOINprI4I6SwyRDjjMSJH5mDv_cr9P29m/pub?gid=875457336&single=true&output=csv';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
