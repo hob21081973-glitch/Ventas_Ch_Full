@@ -10,22 +10,17 @@ import 'dart:convert';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
-
 // Notificador global para actualizar datos en tiempo real entre pestañas
 final ValueNotifier<int> changeNotifierPedidos = ValueNotifier<int>(0); 
-
 // URLs de Google Sheets (Reemplaza con tus enlaces CSV publicados)
-const String urlClientesCSV = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSDvlTapnV9oa4sybOn38Q3m74rhIEDzJzuLwj9nh-M_vwSOINprI4I6SwyRDjjMSJH5mDv_cr9P29m/pub?gid=0&single=true&output=csv';
-const String urlProductosCSV = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSDvlTapnV9oa4sybOn38Q3m74rhIEDzJzuLwj9nh-M_vwSOINprI4I6SwyRDjjMSJH5mDv_cr9P29m/pub?gid=875457336&single=true&output=csv';
-
+const String urlClientesCSV = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTmtKhEE5ziDtm_BQdAeOy8c-Z6H6_GbyKcPOvtdjfKtXgxYObBUB-PlK0ldsiwrW78aabDzei-R2Cd/pub?gid=0&single=true&output=csv';
+const String urlProductosCSV = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTmtKhEE5ziDtm_BQdAeOy8c-Z6H6_GbyKcPOvtdjfKtXgxYObBUB-PlK0ldsiwrW78aabDzei-R2Cd/pub?gid=1903712481&single=true&output=csv';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const VentasChFull());
+  runApp(const AppVentasExportPdf());
 }
-
-class VentasChFull extends StatelessWidget {
-  const VentasChFull({super.key});
-
+class AppVentasExportPdf extends StatelessWidget {
+  const AppVentasExportPdf({super.key});
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -36,33 +31,28 @@ class VentasChFull extends StatelessWidget {
     );
   }
 }
-
 // ==========================================
 // BASE DE DATOS LOCAL (SQLITE)
 // ==========================================
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
   static Database? _database;
-
   DatabaseHelper._init();
-
   Future<Database> get database async {
     if (_database != null) return _database!;
     _database = await _initDB('ventas_app.db');
     return _database!;
   }
-
   Future<Database> _initDB(String filePath) async {
     final dbPath = await getDatabasesPath();
     final path = '$dbPath/$filePath';
-
     return await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: _createDB,
+      onUpgrade: _onUpgradeDB,
     );
   }
-
   Future _createDB(Database db, int version) async {
     await db.execute('''
       CREATE TABLE clientes (
@@ -71,7 +61,6 @@ class DatabaseHelper {
         telefono TEXT
       )
     ''');
-
     await db.execute('''
       CREATE TABLE productos (
         codigo TEXT PRIMARY KEY,
@@ -79,7 +68,6 @@ class DatabaseHelper {
         precio REAL
       )
     ''');
-
     await db.execute('''
       CREATE TABLE pedidos (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,11 +75,18 @@ class DatabaseHelper {
         cliente TEXT,
         productos_json TEXT,
         total REAL,
-        fecha TEXT
+        fecha TEXT,
+        grupo TEXT DEFAULT ''
       )
     ''');
   }
-
+  Future _onUpgradeDB(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      try {
+        await db.execute("ALTER TABLE pedidos ADD COLUMN grupo TEXT DEFAULT ''");
+      } catch (_) {}
+    }
+  }
   Future<void> sincronizarClientesDesdeCSV(String csvData) async {
     final db = await instance.database;
     List<String> lineas = csvData.split('\n');
@@ -111,7 +106,6 @@ class DatabaseHelper {
       }
     });
   }
-
   Future<void> sincronizarProductosDesdeCSV(String csvData) async {
     final db = await instance.database;
     List<String> lineas = csvData.split('\n');
@@ -134,7 +128,6 @@ class DatabaseHelper {
     });
   }
 }
-
 // ==========================================
 // MENÚ PRINCIPAL CON PESTAÑAS
 // ==========================================
@@ -148,6 +141,9 @@ class MenuPrincipal extends StatefulWidget {
 class MenuPrincipalState extends State<MenuPrincipal> {
   int _indiceActual = 0;
   
+  // Controlador de páginas para permitir el deslizamiento horizontal
+  late final PageController _pageController;
+
   int? editandoPedidoId;
   String? editandoNumeroPedidoFijo;
   String? clienteEnCurso;
@@ -156,7 +152,14 @@ class MenuPrincipalState extends State<MenuPrincipal> {
   @override
   void initState() {
     super.initState();
+    _pageController = PageController(initialPage: _indiceActual);
     _cargarBorradorLocal();
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
   }
 
   Future<void> _guardarBorradorLocal() async {
@@ -197,8 +200,9 @@ class MenuPrincipalState extends State<MenuPrincipal> {
       editandoNumeroPedidoFijo = numeroPedido;
       clienteEnCurso = cliente;
       productosEnCurso = List.from(productos);
-      _indiceActual = 0; // Cambiar a la pestaña "Crear"
+      _indiceActual = 0; 
     });
+    _pageController.jumpToPage(0);
     _guardarBorradorLocal();
   }
 
@@ -229,16 +233,28 @@ class MenuPrincipalState extends State<MenuPrincipal> {
     ];
 
     return Scaffold(
-      body: IndexedStack(
-        index: _indiceActual,
+      body: PageView(
+        controller: _pageController,
         children: pantallas,
+        onPageChanged: (index) {
+          setState(() {
+            _indiceActual = index;
+          });
+        },
       ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _indiceActual,
         type: BottomNavigationBarType.fixed,
         selectedItemColor: Colors.indigo,
         unselectedItemColor: Colors.grey,
-        onTap: (index) => setState(() => _indiceActual = index),
+        onTap: (index) {
+          setState(() => _indiceActual = index);
+          _pageController.animateToPage(
+            index,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInOut,
+          );
+        },
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.add_shopping_cart), label: 'Crear'),
           BottomNavigationBarItem(icon: Icon(Icons.history), label: 'Historial'),
@@ -260,11 +276,9 @@ class VistaCrearPedido extends StatefulWidget {
   final VoidCallback onPedidoGuardado;
   final VoidCallback onCambioDato;
   const VistaCrearPedido({super.key, required this.onPedidoGuardado, required this.onCambioDato});
-
   @override
   State<VistaCrearPedido> createState() => _VistaCrearPedidoState();
 }
-
 class _VistaCrearPedidoState extends State<VistaCrearPedido> {
   Future<int> _obtenerSiguienteNumeroPedido() async {
     final db = await DatabaseHelper.instance.database;
@@ -272,7 +286,6 @@ class _VistaCrearPedidoState extends State<VistaCrearPedido> {
     int count = Sqflite.firstIntValue(resultado) ?? 0;
     return (count % 99) + 1;
   }
-
   void _guardarPedido() async {
     final mainState = context.findAncestorStateOfType<MenuPrincipalState>();
     if (mainState?.clienteEnCurso == null) {
@@ -287,7 +300,6 @@ class _VistaCrearPedidoState extends State<VistaCrearPedido> {
       );
       return;
     }
-
     String numPedidoStr;
     if (mainState.editandoNumeroPedidoFijo != null) {
       numPedidoStr = mainState.editandoNumeroPedidoFijo!;
@@ -295,7 +307,6 @@ class _VistaCrearPedidoState extends State<VistaCrearPedido> {
       int numSeq = await _obtenerSiguienteNumeroPedido();
       numPedidoStr = 'Pedido #${numSeq.toString().padLeft(2, '0')}';
     }
-
     double total = mainState.productosEnCurso.fold<double>(
       0.0, 
       (sum, item) => sum + ((item['precio'] as num).toDouble() * (item['cantidad'] as num).toDouble())
@@ -308,7 +319,6 @@ class _VistaCrearPedidoState extends State<VistaCrearPedido> {
           : '';
       return "${p['nombre']}$com (x${p['cantidad']})";
     }).join('; ');
-
     final db = await DatabaseHelper.instance.database;
     
     if (mainState.editandoPedidoId != null) {
@@ -325,19 +335,18 @@ class _VistaCrearPedidoState extends State<VistaCrearPedido> {
         'productos_json': productosStr,
         'total': total,
         'fecha': fecha,
+        'grupo': '',
       });
     }
-
     widget.onPedidoGuardado();
     changeNotifierPedidos.value++;
     setState(() {});
-
-    if(!mounted) return;
+    
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('¡$numPedidoStr Guardado con éxito!')),
     );
   }
-
   void _abrirBuscadorClientes() {
     showDialog(
       context: context,
@@ -423,7 +432,6 @@ class _VistaCrearPedidoState extends State<VistaCrearPedido> {
       },
     );
   }
-
   void _abrirBuscadorProductos() {
     showDialog(
       context: context,
@@ -521,7 +529,6 @@ class _VistaCrearPedidoState extends State<VistaCrearPedido> {
       },
     );
   }
-
   void _pedirComentario(int index) {
     final mainState = context.findAncestorStateOfType<MenuPrincipalState>();
     if (mainState == null) return;
@@ -550,7 +557,6 @@ class _VistaCrearPedidoState extends State<VistaCrearPedido> {
       ),
     );
   }
-
   void _mostrarDialogoGestionProducto(int index) {
     final mainState = context.findAncestorStateOfType<MenuPrincipalState>();
     if (mainState == null) return;
@@ -635,7 +641,6 @@ class _VistaCrearPedidoState extends State<VistaCrearPedido> {
       ),
     );
   }
-
   @override
   Widget build(BuildContext context) {
     final mainState = context.findAncestorStateOfType<MenuPrincipalState>();
@@ -644,7 +649,6 @@ class _VistaCrearPedidoState extends State<VistaCrearPedido> {
       0.0, 
       (sum, item) => sum + ((item['precio'] as num).toDouble() * (item['cantidad'] as num).toDouble())
     ) ?? 0.0;
-
     return Scaffold(
       appBar: AppBar(
         title: Text(estaEditando ? 'Editando ${mainState?.editandoNumeroPedidoFijo}' : 'Crear Pedido'),
@@ -784,59 +788,51 @@ class _VistaCrearPedidoState extends State<VistaCrearPedido> {
     );
   }
 }
-
 // ==========================================
 // 2. PESTAÑA: HISTORIAL DE PEDIDOS
 // ==========================================
 class VistaHistorialPedidos extends StatefulWidget {
   const VistaHistorialPedidos({super.key});
-
   @override
   State<VistaHistorialPedidos> createState() => _VistaHistorialPedidosState();
 }
-
 class _VistaHistorialPedidosState extends State<VistaHistorialPedidos> {
   String _filtro = '';
-
+  bool _mostrarArchivados = false;
   @override
   void initState() {
     super.initState();
     changeNotifierPedidos.addListener(_recargar);
   }
-
   @override
   void dispose() {
     changeNotifierPedidos.removeListener(_recargar);
     super.dispose();
   }
-
   void _recargar() {
     if (mounted) setState(() {});
   }
-
   Future<List<Map<String, dynamic>>> _obtenerPedidos() async {
     final db = await DatabaseHelper.instance.database;
+    String condGrupo = _mostrarArchivados ? "grupo != ''" : "grupo = ''";
+    
     if (_filtro.isEmpty) {
-      return await db.query('pedidos', orderBy: 'id DESC');
+      return await db.query('pedidos', where: condGrupo, orderBy: 'id DESC');
     } else {
       return await db.query(
         'pedidos',
-        where: 'cliente LIKE ? OR numero_pedido LIKE ?',
+        where: '$condGrupo AND (cliente LIKE ? OR numero_pedido LIKE ?)',
         whereArgs: ['%$_filtro%', '%$_filtro%'],
         orderBy: 'id DESC',
       );
     }
   }
-
   void _eliminarPedido(int id) async {
     final db = await DatabaseHelper.instance.database;
     await db.delete('pedidos', where: 'id = ?', whereArgs: [id]);
     changeNotifierPedidos.value++;
     setState(() {});
   }
-
-  // Función para resetear todo el historial de pedidos con confirmación
-  // Función para resetear todo el historial de pedidos con confirmación
   void _confirmarReseteoHistorial() {
     showDialog(
       context: context,
@@ -856,11 +852,9 @@ class _VistaHistorialPedidosState extends State<VistaHistorialPedidos> {
               final db = await DatabaseHelper.instance.database;
               await db.delete('pedidos');
               
-              // Reiniciar el autoincrementable de la tabla pedidos en SQLite
               try {
                 await db.execute("DELETE FROM sqlite_sequence WHERE name='pedidos'");
               } catch (_) {}
-
               changeNotifierPedidos.value++;
               setState(() {});
               
@@ -872,6 +866,104 @@ class _VistaHistorialPedidosState extends State<VistaHistorialPedidos> {
             child: const Text('SÍ', style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
           ),
         ],
+      ),
+    );
+  }
+  void _mostrarDialogoAgruparPedidos() async {
+    final db = await DatabaseHelper.instance.database;
+    final pedidosActivos = await db.query('pedidos', where: "grupo = ''", orderBy: 'id ASC');
+    
+    if (pedidosActivos.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No hay pedidos activos disponibles para agrupar')),
+      );
+      return;
+    }
+    Set<int> seleccionadosIds = {};
+    TextEditingController nombreGrupoController = TextEditingController(text: 'Pedidos Semana 01');
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setStateDialog) => AlertDialog(
+          title: const Text('Agrupar y Ocultar Pedidos'),
+          content: SizedBox(
+            width: double.maxFinite,
+            height: 400,
+            child: Column(
+              children: [
+                TextField(
+                  controller: nombreGrupoController,
+                  decoration: const InputDecoration(
+                    labelText: 'Nombre del grupo (Ej. Pedidos Semana 01)',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                const Text('Selecciona los pedidos a agrupar:', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                const SizedBox(height: 5),
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: pedidosActivos.length,
+                    itemBuilder: (context, index) {
+                      var p = pedidosActivos[index];
+                      int id = p['id'] as int;
+                      String numP = p['numero_pedido']?.toString() ?? 'Pedido #$id';
+                      String cli = p['cliente']?.toString() ?? 'Cliente';
+                      double tot = (p['total'] as num?)?.toDouble() ?? 0.0;
+                      bool isSelected = seleccionadosIds.contains(id);
+                      return CheckboxListTile(
+                        dense: true,
+                        title: Text('$numP - $cli', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                        subtitle: Text('Total: L ${tot.toStringAsFixed(2)}', style: const TextStyle(fontSize: 11)),
+                        value: isSelected,
+                        onChanged: (bool? val) {
+                          setStateDialog(() {
+                            if (val == true) {
+                              seleccionadosIds.add(id);
+                            } else {
+                              seleccionadosIds.remove(id);
+                            }
+                          });
+                        },
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancelar'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.indigo, foregroundColor: Colors.white),
+              onPressed: () async {
+                if (seleccionadosIds.isEmpty) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Selecciona al menos un pedido')),
+                  );
+                  return;
+                }
+                String nombreGrupo = nombreGrupoController.text.trim();
+                if (nombreGrupo.isEmpty) nombreGrupo = 'Grupo de Pedidos';
+                for (int id in seleccionadosIds) {
+                  await db.update('pedidos', {'grupo': nombreGrupo}, where: 'id = ?', whereArgs: [id]);
+                }
+                if (!mounted) return;
+                Navigator.pop(context);
+                changeNotifierPedidos.value++;
+                setState(() {});
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Pedidos agrupados y ocultados en "$nombreGrupo" con éxito')),
+                );
+              },
+              child: const Text('Guardar y Ocultar'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -948,10 +1040,6 @@ class _VistaHistorialPedidosState extends State<VistaHistorialPedidos> {
       productosEdit,
     );
   }
-
-  // ==========================================
-  // FUNCIÓN PARA GENERAR EL PDF INDIVIDUAL
-  // ==========================================
   Future<void> _exportarPdfPedidoIndividual(Map<String, dynamic> pedido) async {
     final pdf = pw.Document();
     final db = await DatabaseHelper.instance.database;
@@ -970,10 +1058,9 @@ class _VistaHistorialPedidosState extends State<VistaHistorialPedidos> {
       telefonoCliente = resCliente.first['telefono']?.toString() ?? '';
       codigoCliente = resCliente.first['codigo']?.toString() ?? '';
     }
-
     String prodStr = pedido['productos_json']?.toString() ?? '';
     List<String> items = prodStr.split(';');
-    List<List<String>> filasProductos = [];
+    List<List<pw.Widget>> filasProductos = [];
     int conteoLineasProductos = 0; 
      
     for (var item in items) {
@@ -987,14 +1074,12 @@ class _VistaHistorialPedidosState extends State<VistaHistorialPedidos> {
         cantidad = int.tryParse(match.group(1) ?? '1') ?? 1;
         nombreProd = item.replaceFirst(regExp, '').trim();
       }
-
       String nombreBusqueda = nombreProd;
       int bracketStart = nombreBusqueda.indexOf('[');
       int bracketEnd = nombreBusqueda.lastIndexOf(']');
       if (bracketStart != -1 && bracketEnd != -1 && bracketEnd > bracketStart) {
         nombreBusqueda = nombreBusqueda.substring(0, bracketStart).trim();
       }
-
       conteoLineasProductos++; 
       double precioUnitario = 0.0;
       String codigoProd = '';
@@ -1008,15 +1093,54 @@ class _VistaHistorialPedidosState extends State<VistaHistorialPedidos> {
         precioUnitario = (resProd.first['precio'] as num?)?.toDouble() ?? 0.0;
         codigoProd = resProd.first['codigo']?.toString() ?? '';
       }
-
-      String nombreConCodigo = codigoProd.isNotEmpty ? '[$codigoProd] $nombreProd' : nombreProd;
-
       double valorTotalFila = precioUnitario * cantidad;
+      
+      String detalleComentario = '';
+      int bStart = nombreProd.indexOf('[');
+      int bEnd = nombreProd.lastIndexOf(']');
+      String nombreLimpio = nombreProd;
+      if (bStart != -1 && bEnd != -1 && bEnd > bStart) {
+        detalleComentario = nombreProd.substring(bStart + 1, bEnd).trim();
+        nombreLimpio = nombreProd.substring(0, bStart).trim();
+      }
+      
+      pw.Widget widgetDescripcion = pw.Column(
+        crossAxisAlignment: pw.CrossAxisAlignment.start,
+        children: [
+          pw.Row(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              if (codigoProd.isNotEmpty)
+                pw.Text(
+                  '[$codigoProd] ',
+                  style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10),
+                ),
+              pw.Expanded(
+                child: pw.Text(
+                  nombreLimpio,
+                  style: pw.TextStyle(fontSize: 10),
+                ),
+              ),
+            ],
+          ),
+          if (detalleComentario.isNotEmpty)
+            pw.Padding(
+              padding: pw.EdgeInsets.only(left: codigoProd.isNotEmpty ? (codigoProd.length * 6.0) + 12.0 : 0.0, top: 2.0),
+              child: pw.Text(
+                detalleComentario,
+                style: const pw.TextStyle(
+                  fontSize: 10,
+                  color: PdfColors.grey700,
+                ),
+              ),
+            ),
+        ],
+      );
       filasProductos.add([
-        cantidad.toString(),
-        nombreConCodigo,
-        precioUnitario.toStringAsFixed(2),
-        valorTotalFila.toStringAsFixed(2),
+        pw.Text(cantidad.toString(), style: const pw.TextStyle(fontSize: 10)),
+        widgetDescripcion,
+        pw.Text(precioUnitario.toStringAsFixed(2), style: const pw.TextStyle(fontSize: 10)),
+        pw.Text(valorTotalFila.toStringAsFixed(2), style: const pw.TextStyle(fontSize: 10)),
       ]);
     }
      
@@ -1033,13 +1157,12 @@ class _VistaHistorialPedidosState extends State<VistaHistorialPedidos> {
     } else {
       directorio = await getApplicationDocumentsDirectory();
     }
-
     String numPedidoRaw = pedido['numero_pedido']?.toString() ?? '';
     if (numPedidoRaw.isEmpty) {
       numPedidoRaw = 'Pedido #${pedido['id']}';
     }
     String numeroPedidoFormateado = numPedidoRaw;
-
+    
     pdf.addPage(
       pw.Page(
         pageFormat: PdfPageFormat.letter,
@@ -1056,15 +1179,15 @@ class _VistaHistorialPedidosState extends State<VistaHistorialPedidos> {
                     crossAxisAlignment: pw.CrossAxisAlignment.start,
                     children: [
                       pw.Text(
-                        'DISCOSMO',
+                        'D  I  S  C  O  S  M  O',
                         style: pw.TextStyle(
-                          fontSize: 22,
+                          fontSize: 25,
                           fontWeight: pw.FontWeight.bold,
                           color: PdfColors.indigo900,
                         ),
                       ),
                       pw.SizedBox(height: 5),
-                      pw.Text('Productos Industrias Chamer y Mas', style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey700)),
+                      pw.Text('Productos Industrias Chamer y Mas', style: const pw.TextStyle(fontSize: 14, color: PdfColors.grey700)),
                     ],
                   ),
                   pw.Column(
@@ -1072,7 +1195,7 @@ class _VistaHistorialPedidosState extends State<VistaHistorialPedidos> {
                     children: [
                       pw.Text('FECHA: ${pedido['fecha']?.toString().substring(0, 10) ?? ''}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 11)),
                       pw.SizedBox(height: 3),
-                      pw.Text(numeroPedidoFormateado, style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 11, color: PdfColors.indigo900)),
+                      pw.Text(numeroPedidoFormateado, style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12, color: PdfColors.indigo900)),
                     ],
                   ),
                 ],
@@ -1080,33 +1203,67 @@ class _VistaHistorialPedidosState extends State<VistaHistorialPedidos> {
               pw.SizedBox(height: 15),
               pw.Divider(color: PdfColors.grey400),
               pw.SizedBox(height: 10),
-              pw.Text('CLIENTE:', style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: PdfColors.grey700)),
+              pw.Text('CLIENTE:', style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold, color: PdfColors.grey700)),
               pw.SizedBox(height: 2),
               pw.Text(clienteNombre, style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold)),
               if (codigoCliente.isNotEmpty)
-                pw.Text('Código: $codigoCliente', style: const pw.TextStyle(fontSize: 12, color: PdfColors.grey700)),
+                pw.Text('Código: $codigoCliente', style: const pw.TextStyle(fontSize: 14, color: PdfColors.grey700)),
               if (telefonoCliente.isNotEmpty)
-                pw.Text('Teléfono: $telefonoCliente', style: const pw.TextStyle(fontSize: 12, color: PdfColors.grey700)),
+                pw.Text('Teléfono: $telefonoCliente', style: const pw.TextStyle(fontSize: 14, color: PdfColors.grey700)),
              
               pw.SizedBox(height: 20),
-              pw.Table.fromTextArray(
-                headers: ['Cantidad', 'Descripción', 'Precio Unitario', 'Valor Total'],
-                data: filasProductos,
-                headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: PdfColors.white, fontSize: 10),
-                headerDecoration: const pw.BoxDecoration(color: PdfColors.indigo),
-                cellStyle: const pw.TextStyle(fontSize: 10),
+              pw.Table(
+                border: null,
                 columnWidths: {
                   0: const pw.FlexColumnWidth(1),
                   1: const pw.FlexColumnWidth(6),
                   2: const pw.FlexColumnWidth(1),
                   3: const pw.FlexColumnWidth(1),
                 },
-                cellAlignment: pw.Alignment.centerLeft,
-                cellAlignments: {
-                  0: pw.Alignment.center,
-                  2: pw.Alignment.centerRight,
-                  3: pw.Alignment.centerRight,
-                },
+                children: [
+                  pw.TableRow(
+                    decoration: const pw.BoxDecoration(color: PdfColors.indigo),
+                    children: [
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.all(6),
+                        child: pw.Text('Cantidad', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: PdfColors.white, fontSize: 10)),
+                      ),
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.all(6),
+                        child: pw.Text('Descripción', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: PdfColors.white, fontSize: 10)),
+                      ),
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.all(6),
+                        child: pw.Text('Precio Unitario', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: PdfColors.white, fontSize: 10), textAlign: pw.TextAlign.right),
+                      ),
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.all(6),
+                        child: pw.Text('Valor Total', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: PdfColors.white, fontSize: 10), textAlign: pw.TextAlign.right),
+                      ),
+                    ],
+                  ),
+                  for (var fila in filasProductos)
+                    pw.TableRow(
+                      children: [
+                        pw.Padding(
+                          padding: const pw.EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+                          child: fila[0],
+                        ),
+                        pw.Padding(
+                          padding: const pw.EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+                          child: fila[1],
+                        ),
+                        pw.Padding(
+                          padding: const pw.EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+                          child: pw.Align(alignment: pw.Alignment.centerRight, child: fila[2]),
+                        ),
+                        pw.Padding(
+                          padding: const pw.EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+                          child: pw.Align(alignment: pw.Alignment.centerRight, child: fila[3]),
+                        ),
+                      ],
+                    ),
+                ],
               ),
               pw.SizedBox(height: 20),
               pw.Row(
@@ -1166,7 +1323,6 @@ class _VistaHistorialPedidosState extends State<VistaHistorialPedidos> {
         },
       ),
     );
-
     try {
       String numPedLimpio = (pedido['numero_pedido']?.toString() ?? 'pedido').replaceAll('#', '').replaceAll(' ', '_');
       final ruta = '${directorio!.path}/Nota_$numPedLimpio.pdf';
@@ -1183,8 +1339,7 @@ class _VistaHistorialPedidosState extends State<VistaHistorialPedidos> {
         SnackBar(content: Text('Error al generar el PDF: $e')),
       );
     }
-  } 
-
+  }
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1192,11 +1347,27 @@ class _VistaHistorialPedidosState extends State<VistaHistorialPedidos> {
         title: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            const Text('Historial de Pedidos'),
-            IconButton(
-              icon: const Icon(Icons.delete_sweep, color: Colors.white),
-              tooltip: 'Resetear historial de pedidos',
-              onPressed: _confirmarReseteoHistorial,
+            Text(_mostrarArchivados ? 'Pedidos Archivados' : 'Historial de Pedidos'),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  icon: Icon(_mostrarArchivados ? Icons.list : Icons.archive, color: Colors.white),
+                  tooltip: _mostrarArchivados ? 'Ver pedidos activos' : 'Agrupar y archivar pedidos',
+                  onPressed: () {
+                    if (_mostrarArchivados) {
+                      setState(() => _mostrarArchivados = false);
+                    } else {
+                      _mostrarDialogoAgruparPedidos();
+                    }
+                  },
+                ),
+                IconButton(
+                  icon: const Icon(Icons.delete_sweep, color: Colors.amberAccent),
+                  tooltip: 'Resetear historial de pedidos',
+                  onPressed: _confirmarReseteoHistorial,
+                ),
+              ],
             ),
           ],
         ),
@@ -1207,17 +1378,37 @@ class _VistaHistorialPedidosState extends State<VistaHistorialPedidos> {
         padding: const EdgeInsets.all(12.0),
         child: Column(
           children: [
-            TextField(
-              decoration: const InputDecoration(
-                labelText: 'Buscar por cliente o número de pedido...',
-                prefixIcon: Icon(Icons.search),
-                border: OutlineInputBorder(),
-              ),
-              onChanged: (val) {
-                setState(() {
-                  _filtro = val.trim();
-                });
-              },
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    decoration: const InputDecoration(
+                      labelText: 'Buscar por cliente o número de pedido...',
+                      prefixIcon: Icon(Icons.search),
+                      border: OutlineInputBorder(),
+                    ),
+                    onChanged: (val) {
+                      setState(() {
+                        _filtro = val.trim();
+                      });
+                    },
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _mostrarArchivados ? Colors.amber.shade700 : Colors.indigo.shade50,
+                    foregroundColor: _mostrarArchivados ? Colors.white : Colors.indigo,
+                  ),
+                  icon: Icon(_mostrarArchivados ? Icons.folder_open : Icons.folder_special),
+                  label: Text(_mostrarArchivados ? 'Ver Activos' : 'Archivados'),
+                  onPressed: () {
+                    setState(() {
+                      _mostrarArchivados = !_mostrarArchivados;
+                    });
+                  },
+                ),
+              ],
             ),
             const SizedBox(height: 10),
             Expanded(
@@ -1227,7 +1418,12 @@ class _VistaHistorialPedidosState extends State<VistaHistorialPedidos> {
                   if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
                   final pedidos = snapshot.data!;
                   if (pedidos.isEmpty) {
-                    return const Center(child: Text('No hay pedidos registrados', style: TextStyle(color: Colors.grey)));
+                    return Center(
+                      child: Text(
+                        _mostrarArchivados ? 'No hay pedidos archivados o agrupados' : 'No hay pedidos registrados',
+                        style: const TextStyle(color: Colors.grey),
+                      ),
+                    );
                   }
                   return ListView.builder(
                     itemCount: pedidos.length,
@@ -1238,6 +1434,7 @@ class _VistaHistorialPedidosState extends State<VistaHistorialPedidos> {
                       final String cliente = p['cliente']?.toString() ?? 'Sin cliente';
                       final String fecha = p['fecha']?.toString() ?? '';
                       final double total = (p['total'] as num?)?.toDouble() ?? 0.0;
+                      final String grupo = p['grupo']?.toString() ?? '';
                        
                       String productosJson = p['productos_json']?.toString() ?? '';
                       List<String> listaProductos = productosJson
@@ -1245,7 +1442,6 @@ class _VistaHistorialPedidosState extends State<VistaHistorialPedidos> {
                           .map((prod) => prod.trim())
                           .where((prod) => prod.isNotEmpty)
                           .toList();
-
                       return Container(
                         width: double.infinity,
                         margin: const EdgeInsets.symmetric(vertical: 6),
@@ -1260,13 +1456,23 @@ class _VistaHistorialPedidosState extends State<VistaHistorialPedidos> {
                                 Row(
                                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                   children: [
-                                    Text(
-                                      numPedido,
-                                      style: const TextStyle(
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.bold,
-                                        color: Colors.indigo,
-                                      ),
+                                    Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          numPedido,
+                                          style: const TextStyle(
+                                            fontSize: 18,
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.indigo,
+                                          ),
+                                        ),
+                                        if (grupo.isNotEmpty)
+                                          Text(
+                                            'Bloque: $grupo',
+                                            style: const TextStyle(fontSize: 11, color: Colors.amber, fontWeight: FontWeight.bold),
+                                          ),
+                                      ],
                                     ),
                                     Row(
                                       mainAxisSize: MainAxisSize.min,
@@ -1345,14 +1551,11 @@ class _VistaHistorialPedidosState extends State<VistaHistorialPedidos> {
 // ==========================================
 class VistaGestionClientes extends StatefulWidget {
   const VistaGestionClientes({super.key});
-
   @override
   State<VistaGestionClientes> createState() => _VistaGestionClientesState();
 }
-
 class _VistaGestionClientesState extends State<VistaGestionClientes> {
   bool _cargando = false;
-
   Future<void> _sincronizar() async {
     setState(() => _cargando = true);
     try {
@@ -1371,7 +1574,6 @@ class _VistaGestionClientesState extends State<VistaGestionClientes> {
       setState(() => _cargando = false);
     }
   }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1433,20 +1635,16 @@ class _VistaGestionClientesState extends State<VistaGestionClientes> {
     );
   }
 }
-
 // ==========================================
 // 4. PESTAÑA: GESTIÓN DE PRODUCTOS
 // ==========================================
 class VistaGestionProductos extends StatefulWidget {
   const VistaGestionProductos({super.key});
-
   @override
   State<VistaGestionProductos> createState() => _VistaGestionProductosState();
 }
-
 class _VistaGestionProductosState extends State<VistaGestionProductos> {
   bool _cargando = false;
-
   Future<void> _sincronizar() async {
     setState(() => _cargando = true);
     try {
@@ -1465,7 +1663,6 @@ class _VistaGestionProductosState extends State<VistaGestionProductos> {
       setState(() => _cargando = false);
     }
   }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1519,34 +1716,28 @@ class _VistaGestionProductosState extends State<VistaGestionProductos> {
     );
   }
 }
-
 // ==========================================
 // 5. PESTAÑA: RESUMEN GENERAL
 // ==========================================
 class VistaResumenGeneral extends StatefulWidget {
   const VistaResumenGeneral({super.key});
-
   @override
   State<VistaResumenGeneral> createState() => _VistaResumenGeneralState();
 }
-
 class _VistaResumenGeneralState extends State<VistaResumenGeneral> {
   @override
   void initState() {
     super.initState();
     changeNotifierPedidos.addListener(_recargar);
   }
-
   @override
   void dispose() {
     changeNotifierPedidos.removeListener(_recargar);
     super.dispose();
   }
-
   void _recargar() {
     if (mounted) setState(() {});
   }
-
   Future<Map<String, dynamic>> _obtenerResumen() async {
     final db = await DatabaseHelper.instance.database;
     final totalPedidosRes = await db.rawQuery('SELECT COUNT(*) as count, SUM(total) as suma FROM pedidos');
@@ -1555,7 +1746,6 @@ class _VistaResumenGeneralState extends State<VistaResumenGeneral> {
     double suma = (resultado['suma'] as num?)?.toDouble() ?? 0.0;
     return {'count': count, 'suma': suma};
   }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1609,34 +1799,28 @@ class _VistaResumenGeneralState extends State<VistaResumenGeneral> {
     );
   }
 }
-
 // ==========================================
 // 6. PESTAÑA: RESUMEN POR PRODUCTO
 // ==========================================
 class VistaResumenProductos extends StatefulWidget {
   const VistaResumenProductos({super.key});
-
   @override
   State<VistaResumenProductos> createState() => _VistaResumenProductosState();
 }
-
 class _VistaResumenProductosState extends State<VistaResumenProductos> {
   @override
   void initState() {
     super.initState();
     changeNotifierPedidos.addListener(_recargar);
   }
-
   @override
   void dispose() {
     changeNotifierPedidos.removeListener(_recargar);
     super.dispose();
   }
-
   void _recargar() {
     if (mounted) setState(() {});
   } 
-
   Future<Map<String, int>> _obtenerResumenProductos() async {
     final db = await DatabaseHelper.instance.database;
     final pedidos = await db.query('pedidos');
@@ -1665,7 +1849,6 @@ class _VistaResumenProductosState extends State<VistaResumenProductos> {
     }
     return conteoProductos;
   }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1717,7 +1900,6 @@ class _VistaResumenProductosState extends State<VistaResumenProductos> {
     );
   }
 }
-
 // ==========================================
 // 7. PESTAÑA: EXPORTAR PDF
 // ==========================================
@@ -1732,11 +1914,10 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
   DateTime? _fechaInicio;
   DateTime? _fechaFin;
   
-  // Variables y controladores para el Reporte Gral por Cliente
   int? _idPedidoSeleccionadoParaReporte;
   final TextEditingController _valorEntregadoController = TextEditingController();
   final TextEditingController _comentarioController = TextEditingController();
-
+  
   @override
   void dispose() {
     _valorEntregadoController.dispose();
@@ -1758,6 +1939,7 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
       final ruta = '${directorio!.path}/$nombreArchivo';
       final archivo = File(ruta);
       await archivo.writeAsBytes(await pdf.save());
+      
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('¡Guardado en Descargas: $nombreArchivo')),
@@ -1782,6 +1964,7 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
       args = [inicioStr, finStr];
     }
     query += ' ORDER BY id DESC';
+    
     final pedidos = await db.rawQuery(query, args);
     if (pedidos.isEmpty) {
       if (!mounted) return;
@@ -1792,13 +1975,12 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
     }
     
     final pdf = pw.Document();
-    List<List<String>> filasReporte = [];
+    List<List<pw.Widget>> filasReporteWidgets = [];
     double totalGeneral = 0.0;
-
+    
     for (var p in pedidos) {
       double totalPedido = (p['total'] as num?)?.toDouble() ?? 0.0;
       totalGeneral += totalPedido;
-
       String nombreClienteRaw = p['cliente']?.toString() ?? '';
       String codigoCliente = '';
       
@@ -1815,13 +1997,12 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
       }
       
       String clienteConCodigo = codigoCliente.isNotEmpty ? '[$codigoCliente] $nombreClienteRaw' : nombreClienteRaw;
-
-      String productosTexto = '';
+      
+      List<pw.Widget> widgetsProductosPedido = [];
       try {
         String prodStr = p['productos_json']?.toString() ?? '';
         if (prodStr.isNotEmpty) {
           List<String> items = prodStr.split(';');
-          List<String> itemsProcesados = [];
           
           for (var item in items) {
             item = item.trim();
@@ -1835,13 +2016,14 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
               cantidad = int.tryParse(match.group(1) ?? '1') ?? 1;
               nombreProd = item.replaceFirst(regExp, '').trim();
             }
-
+            
+            String detalleComentario = '';
             int bracketStart = nombreProd.indexOf('[');
             int bracketEnd = nombreProd.lastIndexOf(']');
             if (bracketStart != -1 && bracketEnd != -1 && bracketEnd > bracketStart) {
+              detalleComentario = nombreProd.substring(bracketStart + 1, bracketEnd).trim();
               nombreProd = nombreProd.substring(0, bracketStart).trim();
             }
-
             String codigoProd = '';
             final resProd = await db.query(
               'productos',
@@ -1852,35 +2034,49 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
             if (resProd.isNotEmpty) {
               codigoProd = resProd.first['codigo']?.toString() ?? '';
             }
-
             String prodConCodigo = codigoProd.isNotEmpty ? '[$codigoProd] $nombreProd' : nombreProd;
             
-            if (itemsProcesados.isNotEmpty) {
-              itemsProcesados.add('\n');
-            }
-            itemsProcesados.add('[   ] $prodConCodigo (x$cantidad)');
+            // CORRECCIÓN: Productos y comentarios agrupados para no generar tanto espacio vacío
+            widgetsProductosPedido.add(
+              pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                mainAxisSize: pw.MainAxisSize.min,
+                children: [
+                  pw.Text('[    ] $prodConCodigo (x$cantidad)', style: const pw.TextStyle(fontSize: 9)),
+                  if (detalleComentario.isNotEmpty)
+                    pw.Padding(
+                      padding: const pw.EdgeInsets.only(left: 10, top: 1, bottom: 1),
+                      child: pw.Text(detalleComentario, style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700)),
+                    ),
+                ],
+              ),
+            );
           }
-          productosTexto = itemsProcesados.join('');
         }
       } catch (_) {
-        productosTexto = p['productos_json']?.toString() ?? '';
+        widgetsProductosPedido.add(
+          pw.Text(p['productos_json']?.toString() ?? '', style: const pw.TextStyle(fontSize: 9)),
+        );
       }
-
+      
       String numPedRaw = p['numero_pedido']?.toString() ?? '';
       if (numPedRaw.isEmpty) {
         numPedRaw = p['id']?.toString() ?? '';
       }
       String numLimpio = numPedRaw.replaceAll('Pedido', '').replaceAll('#', '').trim();
       String numeroPedidoFormateado = 'Pedido $numLimpio';
-
-      filasReporte.add([
-        numeroPedidoFormateado,
-        clienteConCodigo,
-        productosTexto,
-        "L. ${totalPedido.toStringAsFixed(2)}",
+      
+      filasReporteWidgets.add([
+        pw.Text(numeroPedidoFormateado, style: const pw.TextStyle(fontSize: 9)),
+        pw.Text(clienteConCodigo, style: const pw.TextStyle(fontSize: 9)),
+        pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.start,
+          children: widgetsProductosPedido,
+        ),
+        pw.Text("L. ${totalPedido.toStringAsFixed(2)}", style: const pw.TextStyle(fontSize: 9)),
       ]);
     }
-
+    
     pdf.addPage(
       pw.MultiPage(
         pageFormat: PdfPageFormat.letter,
@@ -1894,7 +2090,7 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
                   crossAxisAlignment: pw.CrossAxisAlignment.start,
                   children: [
                     pw.Text(
-                      "D  I  C  O  S  M  O",
+                      "D   I   C   O   S   M   O",
                       style: pw.TextStyle(
                         fontSize: 18,
                         fontWeight: pw.FontWeight.bold,
@@ -1951,30 +2147,59 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
             pw.SizedBox(height: 10),
             pw.Divider(thickness: 1, color: PdfColors.blue900),
             pw.SizedBox(height: 10),
-            pw.Table.fromTextArray(
-              headers: ['Pedido', 'Nombre Cliente', 'Productos', 'Valor Total'],
-              data: filasReporte,
-              headerStyle: pw.TextStyle(
-                fontWeight: pw.FontWeight.bold,
-                color: PdfColors.white,
-                fontSize: 10,
-              ),
-              headerDecoration: const pw.BoxDecoration(
-                color: PdfColors.blue900,
-              ),
-              cellStyle: const pw.TextStyle(fontSize: 9),
-              cellPadding: const pw.EdgeInsets.all(6),
+            pw.Table(
+              border: pw.TableBorder.all(color: PdfColors.grey400, width: 0.5),
               columnWidths: {
                 0: const pw.FlexColumnWidth(0.9), 
                 1: const pw.FlexColumnWidth(2.2), 
                 2: const pw.FlexColumnWidth(5.5), 
                 3: const pw.FlexColumnWidth(1.3), 
               },
-              cellAlignment: pw.Alignment.centerLeft,
-              cellAlignments: {
-                0: pw.Alignment.center,
-                3: pw.Alignment.centerRight,
-              },
+              children: [
+                pw.TableRow(
+                  decoration: const pw.BoxDecoration(color: PdfColors.blue900),
+                  children: [
+                    pw.Padding(
+                      padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                      child: pw.Text('Pedido', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: PdfColors.white, fontSize: 10), textAlign: pw.TextAlign.center),
+                    ),
+                    pw.Padding(
+                      padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                      child: pw.Text('Nombre Cliente', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: PdfColors.white, fontSize: 10)),
+                    ),
+                    pw.Padding(
+                      padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                      child: pw.Text('Productos', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: PdfColors.white, fontSize: 10)),
+                    ),
+                    pw.Padding(
+                      padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                      child: pw.Text('Valor Total', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: PdfColors.white, fontSize: 10), textAlign: pw.TextAlign.right),
+                    ),
+                  ],
+                ),
+                for (var fila in filasReporteWidgets)
+                  pw.TableRow(
+                    children: [
+                      // CORRECCIÓN: Padding vertical reducido a 3
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                        child: pw.Align(alignment: pw.Alignment.center, child: fila[0]),
+                      ),
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                        child: fila[1],
+                      ),
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                        child: fila[2],
+                      ),
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                        child: pw.Align(alignment: pw.Alignment.centerRight, child: fila[3]),
+                      ),
+                    ],
+                  ),
+              ],
             ),
           ];
         },
@@ -2005,10 +2230,11 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
       );
       return;
     }
-
+    
     Map<String, int> conteoProductos = {};
     Map<String, double> valorTotalProductos = {};
-
+    Map<String, String> comentariosProductos = {};
+    
     for (var pedido in pedidos) {
       String productosJson = pedido['productos_json']?.toString() ?? '';
       List<String> items = productosJson.split(';');
@@ -2016,49 +2242,58 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
       for (var item in items) {
         item = item.trim();
         if (item.isEmpty) continue;
+        
         RegExp regExp = RegExp(r'\s*\(x(\d+)\)$');
         Match? match = regExp.firstMatch(item);
         int cantidad = 1;
-        String nombreProd = item;
+        String itemLimpio = item;
         if (match != null) {
           cantidad = int.tryParse(match.group(1) ?? '1') ?? 1;
-          nombreProd = item.replaceFirst(regExp, '').trim();
-          
-          int bracketIdx = nombreProd.indexOf(' [');
-          if (bracketIdx != -1) {
-            nombreProd = nombreProd.substring(0, bracketIdx).trim();
-          }
+          itemLimpio = item.replaceFirst(regExp, '').trim();
         }
-
-        conteoProductos[nombreProd] = (conteoProductos[nombreProd] ?? 0) + cantidad;
-
+        
+        String detalleComentario = '';
+        int bracketStart = itemLimpio.indexOf('[');
+        int bracketEnd = itemLimpio.lastIndexOf(']');
+        String nombreProd = itemLimpio;
+        
+        if (bracketStart != -1 && bracketEnd != -1 && bracketEnd > bracketStart) {
+          detalleComentario = itemLimpio.substring(bracketStart + 1, bracketEnd).trim();
+          nombreProd = itemLimpio.substring(0, bracketStart).trim();
+        }
+        String claveAgrupacion = detalleComentario.isNotEmpty ? '$nombreProd|$detalleComentario' : nombreProd;
+        conteoProductos[claveAgrupacion] = (conteoProductos[claveAgrupacion] ?? 0) + cantidad;
+        
         final resProd = await db.query(
           'productos',
           where: 'nombre = ?',
           whereArgs: [nombreProd],
           limit: 1,
         );
-
         double precioUnitario = 0.0;
         if (resProd.isNotEmpty) {
           precioUnitario = (resProd.first['precio'] as num?)?.toDouble() ?? 0.0;
         }
-
         double subtotalItem = precioUnitario * cantidad;
-        valorTotalProductos[nombreProd] = (valorTotalProductos[nombreProd] ?? 0.0) + subtotalItem;
+        valorTotalProductos[claveAgrupacion] = (valorTotalProductos[claveAgrupacion] ?? 0.0) + subtotalItem;
+        comentariosProductos[claveAgrupacion] = detalleComentario;
       }
     }
-
+    
     final listaOrdenada = conteoProductos.entries.toList()
       ..sort((a, b) => a.key.compareTo(b.key));
-
-    List<List<String>> filasProductosVendidos = [];
+      
+    List<List<pw.Widget>> filasProductosWidgets = [];
+    
     for (var entry in listaOrdenada) {
-      String nombreProd = entry.key;
+      String clave = entry.key;
       int cantidadTotal = entry.value;
-      double valorTotal = valorTotalProductos[nombreProd] ?? 0.0;
+      double valorTotal = valorTotalProductos[clave] ?? 0.0;
+      
+      String nombreProd = clave.contains('|') ? clave.split('|')[0] : clave;
+      String comentario = comentariosProductos[clave] ?? '';
       String codigoProd = '';
-
+      
       final resProd = await db.query(
         'productos',
         where: 'nombre = ?',
@@ -2068,12 +2303,26 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
       if (resProd.isNotEmpty) {
         codigoProd = resProd.first['codigo']?.toString() ?? '';
       }
-
+      
       String productoConCodigo = codigoProd.isNotEmpty ? '[$codigoProd] $nombreProd' : nombreProd;
-      filasProductosVendidos.add([
-        productoConCodigo,
-        cantidadTotal.toString(),
-        'L. ${valorTotal.toStringAsFixed(2)}'
+      List<pw.Widget> widgetsContenido = [
+        pw.Text(productoConCodigo, style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9)),
+      ];
+      if (comentario.isNotEmpty) {
+        widgetsContenido.add(
+          pw.Padding(
+            padding: const pw.EdgeInsets.only(left: 10),
+            child: pw.Text(comentario, style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey700)),
+          ),
+        );
+      }
+      filasProductosWidgets.add([
+        pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.start,
+          children: widgetsContenido,
+        ),
+        pw.Text(cantidadTotal.toString(), style: const pw.TextStyle(fontSize: 9)),
+        pw.Text('L. ${valorTotal.toStringAsFixed(2)}', style: const pw.TextStyle(fontSize: 9)),
       ]);
     }
     
@@ -2091,7 +2340,7 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
                   crossAxisAlignment: pw.CrossAxisAlignment.start,
                   children: [
                     pw.Text(
-                      "D  I  C  O  S  M  O",
+                      "D   I   C   O   S   M   O",
                       style: pw.TextStyle(
                         fontSize: 18,
                         fontWeight: pw.FontWeight.bold,
@@ -2111,20 +2360,20 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
                   crossAxisAlignment: pw.CrossAxisAlignment.end,
                   children: [
                     pw.Text(
-                      "Reporte Gral de Productos Vendidos",
+                      "Reporte Gral Productos Vendidos",
                       style: pw.TextStyle(
-                        fontSize: 14,
+                        fontSize: 13,
                         fontWeight: pw.FontWeight.bold,
                       ),
                     ),
                     if (_fechaInicio != null && _fechaFin != null)
                       pw.Text(
                         'Del: ${DateFormat('dd/MM/yy').format(_fechaInicio!)} al ${DateFormat('dd/MM/yy').format(_fechaFin!)}',
-                        style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey700),
+                        style: const pw.TextStyle(fontSize: 12, color: PdfColors.grey700),
                       ),
                     pw.Text(
                       "Fecha: ${DateFormat('dd/MM/yy').format(DateTime.now())}",
-                      style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey600),
+                      style: const pw.TextStyle(fontSize: 12, color: PdfColors.grey600),
                     ),
                   ],
                 ),
@@ -2133,29 +2382,49 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
             pw.SizedBox(height: 15),
             pw.Divider(thickness: 1, color: PdfColors.blue900),
             pw.SizedBox(height: 10),
-            pw.Table.fromTextArray(
-              headers: ['NOMBRE DEL PRODUCTO', 'CANTIDAD', 'VALOR TOTAL'],
-              data: filasProductosVendidos,
-              headerStyle: pw.TextStyle(
-                fontWeight: pw.FontWeight.bold,
-                color: PdfColors.white,
-                fontSize: 10,
-              ),
-              headerDecoration: const pw.BoxDecoration(
-                color: PdfColors.blue900,
-              ),
-              cellStyle: const pw.TextStyle(fontSize: 9),
-              cellPadding: const pw.EdgeInsets.all(6),
+            pw.Table(
+              border: pw.TableBorder.all(color: PdfColors.grey400, width: 0.5),
               columnWidths: {
-                0: const pw.FlexColumnWidth(4.5),
+                0: const pw.FlexColumnWidth(5.5),
                 1: const pw.FlexColumnWidth(1.5),
-                2: const pw.FlexColumnWidth(2.0),
+                2: const pw.FlexColumnWidth(1.5),
               },
-              cellAlignments: {
-                0: pw.Alignment.centerLeft,
-                1: pw.Alignment.center,
-                2: pw.Alignment.centerRight,
-              },
+              children: [
+                pw.TableRow(
+                  decoration: const pw.BoxDecoration(color: PdfColors.blue900),
+                  children: [
+                    pw.Padding(
+                      padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                      child: pw.Text('NOMBRE DEL PRODUCTO', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: PdfColors.white, fontSize: 10),textAlign: pw.TextAlign.center),
+                    ),
+                    pw.Padding(
+                      padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                      child: pw.Text('CANTIDAD', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: PdfColors.white, fontSize: 10), textAlign: pw.TextAlign.center),
+                    ),
+                    pw.Padding(
+                      padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                      child: pw.Text('VALOR TOTAL', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: PdfColors.white, fontSize: 10), textAlign: pw.TextAlign.right),
+                    ),
+                  ],
+                ),
+                for (var fila in filasProductosWidgets)
+                  pw.TableRow(
+                    children: [
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                        child: fila[0],
+                      ),
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                        child: pw.Align(alignment: pw.Alignment.center, child: fila[1]),
+                      ),
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                        child: pw.Align(alignment: pw.Alignment.centerRight, child: fila[2]),
+                      ),
+                    ],
+                  ),
+              ],
             ),
           ];
         },
@@ -2165,11 +2434,10 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
     String nombre = 'Reporte_Productos_${DateTime.now().millisecondsSinceEpoch}.pdf';
     await _guardarYCompartirPdf(pdf, nombre);
   }
-
+  // Aqui genera el Pdf del Reporte General Por Cliente
   Future<void> _generarPdfReporteGeneralPorCliente() async {
     final db = await DatabaseHelper.instance.database;
     final pedidos = await db.query('pedidos', orderBy: 'id ASC');
-
     if (pedidos.isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -2177,11 +2445,11 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
       );
       return;
     }
-
+    
     List<List<String>> filasReporteGeneralCliente = [];
     double sumaTotalPedidos = 0.0;
     double sumaTotalEntregado = 0.0;
-
+    
     for (var p in pedidos) {
       String nombreClienteRaw = p['cliente']?.toString() ?? '';
       String codigoCliente = '';
@@ -2201,7 +2469,6 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
       String clienteConCodigo = codigoCliente.isNotEmpty 
           ? '[$codigoCliente] $nombreClienteRaw' 
           : nombreClienteRaw;
-
       int idPedido = p['id'] as int;
       String numPedRaw = p['numero_pedido']?.toString() ?? '';
       if (numPedRaw.isEmpty) {
@@ -2209,13 +2476,12 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
       } else if (!numPedRaw.toLowerCase().contains('pedido')) {
         numPedRaw = 'Pedido $numPedRaw';
       }
-
+      
       double totalPedido = (p['total'] as num?)?.toDouble() ?? 0.0;
       sumaTotalPedidos += totalPedido;
-
       double valEntregado = totalPedido;
       String comentario = 'Entregado';
-
+      
       if (_idPedidoSeleccionadoParaReporte == idPedido) {
         if (_valorEntregadoController.text.isNotEmpty) {
           valEntregado = double.tryParse(_valorEntregadoController.text) ?? totalPedido;
@@ -2225,7 +2491,6 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
         }
       }
       sumaTotalEntregado += valEntregado;
-
       filasReporteGeneralCliente.add([
         numPedRaw,
         clienteConCodigo,
@@ -2234,10 +2499,10 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
         comentario.isEmpty ? '-' : comentario,
       ]);
     }
-
+    
     double diferenciaTotal = sumaTotalPedidos - sumaTotalEntregado;
-
     final pdf = pw.Document();
+    
     pdf.addPage(
       pw.MultiPage(
         pageFormat: PdfPageFormat.letter,
@@ -2251,7 +2516,7 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
                   crossAxisAlignment: pw.CrossAxisAlignment.start,
                   children: [
                     pw.Text(
-                      "D  I  C  O  S  M  O",
+                      "D   I   C   O   S   M   O",
                       style: pw.TextStyle(
                         fontSize: 18,
                         fontWeight: pw.FontWeight.bold,
@@ -2289,7 +2554,6 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
             pw.Row(
               mainAxisAlignment: pw.MainAxisAlignment.end,
               children: [
-                // Total Pedido
                 pw.Row(
                   children: [
                     pw.Text('Total Pedido: ', style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold)),
@@ -2304,7 +2568,6 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
                   ],
                 ),
                 pw.SizedBox(width: 8),
-                // Total Entregado
                 pw.Row(
                   children: [
                     pw.Text('Total Entregado: ', style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold)),
@@ -2319,7 +2582,6 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
                   ],
                 ),
                 pw.SizedBox(width: 8),
-                // Diferencia
                 pw.Row(
                   children: [
                     pw.Text('Diferencia: ', style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold)),
@@ -2350,7 +2612,7 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
                 color: PdfColors.blue900,
               ),
               cellStyle: const pw.TextStyle(fontSize: 9),
-              cellPadding: const pw.EdgeInsets.all(6),
+              cellPadding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 3),
               columnWidths: {
                 0: const pw.FlexColumnWidth(1.5),
                 1: const pw.FlexColumnWidth(2.5),
@@ -2370,7 +2632,6 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
         },
       ),
     );
-
     String nombre = 'Reporte_General_Por_Cliente_${DateTime.now().millisecondsSinceEpoch}.pdf';
     await _guardarYCompartirPdf(pdf, nombre);
   }
@@ -2461,7 +2722,7 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
               child: ListTile(
                 leading: const Icon(Icons.bar_chart, color: Colors.indigo, size: 36),
                 title: const Text('Reporte por Productos Vendidos', style: TextStyle(fontWeight: FontWeight.bold)),
-                subtitle: const Text('Exporta el total acumulado de unidades vendidas por cada producto.'),
+                subtitle: const Text('Exporta el total acumulado de unidades vendidas por cada producto con sus comentarios.'),
                 trailing: ElevatedButton(
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.indigo, foregroundColor: Colors.white),
                   onPressed: _generarPdfProductosVendidos,
@@ -2470,9 +2731,6 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
               ),
             ),
             const SizedBox(height: 15),
-            // ========================================================
-            // SECCIÓN: REPORTE GRAL POR CLIENTE
-            // ========================================================
             Card(
               elevation: 3,
               child: Padding(
@@ -2484,94 +2742,11 @@ class _VistaExportarPdfState extends State<VistaExportarPdf> {
                     const SizedBox(height: 5),
                     const Text('Selecciona un pedido para registrar su valor entregado y comentario.', style: TextStyle(fontSize: 12, color: Colors.grey)),
                     const SizedBox(height: 10),
-                    FutureBuilder<List<Map<String, dynamic>>>(
-                      future: DatabaseHelper.instance.database.then((db) => db.query('pedidos', orderBy: 'id ASC')),
-                      builder: (context, snapshot) {
-                        if (!snapshot.hasData) return const CircularProgressIndicator();
-                        final pedidos = snapshot.data!;
-                        if (pedidos.isEmpty) {
-                          return const Text('No hay pedidos registrados.', style: TextStyle(color: Colors.red, fontSize: 12));
-                        }
-                        
-                        return Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            DropdownButtonFormField<int>(
-                              decoration: const InputDecoration(
-                                labelText: 'Seleccionar Pedido',
-                                border: OutlineInputBorder(),
-                                contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                              ),
-                              value: _idPedidoSeleccionadoParaReporte,
-                              items: pedidos.map((p) {
-                                int id = p['id'] as int;
-                                String numPed = p['numero_pedido']?.toString() ?? '';
-                                if (numPed.isEmpty) numPed = 'Pedido #$id';
-                                else if (!numPed.toLowerCase().contains('pedido')) numPed = 'Pedido $numPed';
-                                
-                                String cliente = p['cliente']?.toString() ?? '';
-                                String labelText = '$numPed - $cliente';
-                                
-                                return DropdownMenuItem<int>(
-                                  value: id,
-                                  child: Text(labelText, overflow: TextOverflow.ellipsis),
-                                );
-                              }).toList(),
-                              onChanged: (val) {
-                                setState(() {
-                                  _idPedidoSeleccionadoParaReporte = val;
-                                  if (val != null) {
-                                    final pedidoEncontrado = pedidos.firstWhere((p) => p['id'] == val);
-                                    double total = (pedidoEncontrado['total'] as num?)?.toDouble() ?? 0.0;
-                                    _valorEntregadoController.text = total.toStringAsFixed(2);
-                                    _comentarioController.text = 'Entregado';
-                                  }
-                                });
-                              },
-                            ),
-                            if (_idPedidoSeleccionadoParaReporte != null) ...[
-                              const SizedBox(height: 15),
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: TextField(
-                                      controller: _valorEntregadoController,
-                                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                                      decoration: const InputDecoration(
-                                        labelText: 'Valor Entregado',
-                                        border: OutlineInputBorder(),
-                                        isDense: true,
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    flex: 2,
-                                    child: TextField(
-                                      controller: _comentarioController,
-                                      decoration: const InputDecoration(
-                                        labelText: 'Comentario',
-                                        border: OutlineInputBorder(),
-                                        isDense: true,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ],
-                            const SizedBox(height: 15),
-                            Align(
-                              alignment: Alignment.centerRight,
-                              child: ElevatedButton.icon(
-                                style: ElevatedButton.styleFrom(backgroundColor: Colors.indigo, foregroundColor: Colors.white),
-                                onPressed: _generarPdfReporteGeneralPorCliente,
-                                icon: const Icon(Icons.picture_as_pdf),
-                                label: const Text('Exportar Reporte Gral por Cliente'),
-                              ),
-                            ),
-                          ],
-                        );
-                      },
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.indigo, foregroundColor: Colors.white),
+                      onPressed: _generarPdfReporteGeneralPorCliente,
+                      icon: const Icon(Icons.picture_as_pdf),
+                      label: const Text('Exportar Reporte por Cliente'),
                     ),
                   ],
                 ),
